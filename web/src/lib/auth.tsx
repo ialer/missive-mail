@@ -12,8 +12,8 @@ interface User {
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, name?: string) => Promise<void>;
+  login: (email: string, password: string, turnstileToken?: string) => Promise<void>;
+  register: (email: string, password: string, name?: string, turnstileToken?: string) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -44,8 +44,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refreshUser().finally(() => setLoading(false));
   }, [refreshUser]);
 
-  const login = async (email: string, password: string) => {
-    const data = await api.login(email, password);
+  const login = async (email: string, password: string, turnstileToken?: string) => {
+    const data = await api.login(email, password, turnstileToken);
     if (data.requiresTwoFactor) {
       // TODO: implement 2FA flow
       throw new Error('Two-factor authentication required');
@@ -55,9 +55,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(data.user);
   };
 
-  const register = async (email: string, password: string, name?: string) => {
-    await api.register(email, password, name);
-    await login(email, password);
+  const register = async (email: string, password: string, name?: string, turnstileToken?: string) => {
+    await api.register(email, password, name, turnstileToken);
+    await login(email, password, turnstileToken);
   };
 
   const logout = () => {

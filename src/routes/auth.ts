@@ -10,6 +10,7 @@ import {
   authMiddleware,
   type AuthVariables,
 } from "../lib/auth";
+import { verifyTurnstile } from "../lib/turnstile";
 import type { Env } from "../worker";
 
 const authApp = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
@@ -18,12 +19,14 @@ const authApp = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
-  name: z.string().min(1).max(100),
+  name: z.string().min(1).max(100).optional(),
+  turnstileToken: z.string().optional(),
 });
 
 const loginSchema = z.object({
   email: z.string().email(),
   password: z.string(),
+  turnstileToken: z.string().optional(),
 });
 
 const refreshSchema = z.object({
@@ -39,8 +42,14 @@ authApp.post("/register", async (c) => {
     return c.json({ error: "Validation failed", details: parsed.error.issues }, 400);
   }
 
-  const { email, password, name } = parsed.data;
+  const { email, password, name, turnstileToken } = parsed.data;
   const db = getDb(c.env);
+
+  // Verify Turnstile (optional if token provided)
+  if (turnstileToken) {
+    const ok = await verifyTurnstile(c.env, turnstileToken, c.req.header("cf-connecting-ip") || "unknown");
+    if (!ok) return c.json({ error: "Captcha verification failed" }, 403);
+  }
 
   // Check if user already exists
   const existing = await db
@@ -109,8 +118,14 @@ authApp.post("/login", async (c) => {
     return c.json({ error: "Validation failed", details: parsed.error.issues }, 400);
   }
 
-  const { email, password } = parsed.data;
+  const { email, password, turnstileToken } = parsed.data;
   const db = getDb(c.env);
+
+  // Verify Turnstile (optional if token provided)
+  if (turnstileToken) {
+    const ok = await verifyTurnstile(c.env, turnstileToken, c.req.header("cf-connecting-ip") || "unknown");
+    if (!ok) return c.json({ error: "Captcha verification failed" }, 403);
+  }
   const ip =
     c.req.header("CF-Connecting-IP") || c.req.header("x-forwarded-for") || "unknown";
   const userAgent = c.req.header("User-Agent") || "unknown";

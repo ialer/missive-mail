@@ -115,20 +115,20 @@ class ApiClient {
 
   // ─── Auth (mounted at /auth, not /api/v1/auth) ────────────────────────────
 
-  login(email: string, password: string) {
+  login(email: string, password: string, turnstileToken?: string) {
     return this.request<{
       user: any;
       accessToken: string;
       refreshToken: string;
       requiresTwoFactor?: boolean;
       tempToken?: string;
-    }>('/login', { method: 'POST', body: JSON.stringify({ email, password }), raw: true });
+    }>('/login', { method: 'POST', body: JSON.stringify({ email, password, turnstileToken }), raw: true });
   }
 
-  register(email: string, password: string, name?: string) {
+  register(email: string, password: string, name?: string, turnstileToken?: string) {
     return this.request('/register', {
       method: 'POST',
-      body: JSON.stringify({ email, password, name }),
+      body: JSON.stringify({ email, password, name, turnstileToken }),
       raw: true,
     });
   }

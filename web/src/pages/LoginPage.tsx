@@ -2,8 +2,8 @@ import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../lib/auth';
-import { cn } from '../lib/utils';
 import { Mail, Loader2 } from 'lucide-react';
+import TurnstileWidget from '../components/TurnstileWidget';
 
 export default function LoginPage() {
   const { login } = useAuth();
@@ -13,13 +13,14 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
     setLoading(true);
     try {
-      await login(email, password);
+      await login(email, password, turnstileToken);
       navigate('/');
     } catch (err: any) {
       setError(err.message || t('login.loginFailed'));
@@ -71,6 +72,11 @@ export default function LoginPage() {
               className="w-full rounded-lg border border-[var(--border-primary)] bg-[var(--bg-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none transition-colors focus:border-blue-600"
             />
           </div>
+
+          <TurnstileWidget
+            onVerify={(token) => setTurnstileToken(token)}
+            onExpire={() => setTurnstileToken('')}
+          />
 
           <button
             type="submit"
