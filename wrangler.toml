@@ -1,0 +1,41 @@
+name = "missive-mail"
+main = "src/worker.ts"
+compatibility_date = "2025-05-07"
+compatibility_flags = ["nodejs_compat"]
+
+# D1 Database
+[[d1_databases]]
+binding = "DB"
+database_name = "mail-db"
+database_id = "715613a1-bacc-4adb-a13e-406136a13e1f"
+
+# KV Namespace
+[[kv_namespaces]]
+binding = "KV"
+id = "8443c7b8f06c481b9ead6aa90ef56b98"
+
+# R2 Bucket
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "mail-storage"
+
+# Queue
+[[queues.consumers]]
+queue = "webhook-queue"
+max_retries = 3
+dead_letter_queue = "webhook-dlq"
+
+# Durable Objects (for McpAgent) - SQLite storage
+[durable_objects]
+bindings = [
+  { name = "MCP_AGENT", class_name = "MailMCP" }
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["MailMCP"]
+
+# Static Assets
+[assets]
+directory = "web/dist"
+binding = "ASSETS"

@@ -1,0 +1,32 @@
+{
+  "name": "missive-mail",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "wrangler d1 migrations apply mail-db",
+    "db:studio": "drizzle-kit studio",
+    "test": "vitest",
+    "build:web": "cd web && npm run build"
+  },
+  "dependencies": {
+    "hono": "^4.4.0",
+    "agents": "^0.0.46",
+    "hono-agents": "^0.0.24",
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "drizzle-orm": "^0.38.0",
+    "postal-mime": "^2.2.17",
+    "zod": "^3.23.0",
+    "resend": "^4.0.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250507.0",
+    "drizzle-kit": "^0.30.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "wrangler": "^4.0.0"
+  }
+}
