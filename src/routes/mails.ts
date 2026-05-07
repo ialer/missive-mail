@@ -116,6 +116,114 @@ mailApp.get("/analytics", async (c) => {
   return c.json({ totals, byFolder });
 });
 
+// ─── GET /api/v1/mails/:id/conversation ─────────────────────────────────────
+mailApp.get("/:id/conversation", async (c) => {
+  const userId = c.get("userId");
+  const mailId = c.req.param("id");
+  const db = getDb(c.env);
+
+  const seed = await db
+    .select()
+    .from(schema.mails)
+    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)))
+    .limit(1);
+
+  if (seed.length === 0) {
+    return c.json({ error: "Mail not found" }, 404);
+  }
+
+  // Strip all Re:/Fwd: prefixes to get core subject
+  let coreSubject = seed[0].subject;
+  while (/^(Re|Fwd?|Aw|Sv):\s*/i.test(coreSubject)) {
+    coreSubject = coreSubject.replace(/^(Re|Fwd?|Aw|Sv):\s*/i, "");
+  }
+
+  // Simple: find all mails whose subject ends with the core subject
+  // This matches "Re: Re: 测试", "Fwd: 测试", "测试" etc.
+  const allMails = await db
+    .select()
+    .from(schema.mails)
+    .where(
+      and(
+        eq(schema.mails.userId, userId),
+        sql`LOWER(${schema.mails.subject}) LIKE ${"%" + coreSubject.toLowerCase()}`
+      )
+    )
+    .orderBy(sql`${schema.mails.createdAt} ASC`)
+    .limit(50);
+
+  // Fallback to single mail if no thread
+  if (allMails.length === 0) {
+    const body = await db.select().from(schema.mailBodies).where(eq(schema.mailBodies.mailId, mailId)).limit(1);
+    const users = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
+    const myEmail = users[0]?.email || "";
+    return c.json({
+      conversation: {
+        id: seed[0].id,
+        subject: seed[0].subject,
+        messages: [{
+          ...seed[0],
+          body: body[0]?.textContent || "",
+          htmlBody: body[0]?.htmlContent || "",
+          isOwn: seed[0].fromAddr === myEmail,
+          attachments: [],
+        }],
+      },
+    });
+  }
+
+  // Fetch bodies
+  const mailIds = allMails.map((m) => m.id);
+  const bodies = await db
+    .select()
+    .from(schema.mailBodies)
+    .where(sql`${schema.mailBodies.mailId} IN (${sql.join(mailIds.map((id) => sql`${id}`), sql`, `)})`);
+  const bodyMap = new Map(bodies.map((b) => [b.mailId, b]));
+
+  const users = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
+  const myEmail = users[0]?.email || "";
+
+  // Mark all as read
+  const unreadIds = allMails.filter((m) => !m.isRead).map((m) => m.id);
+  if (unreadIds.length > 0) {
+    await db.update(schema.mails).set({ isRead: true }).where(sql`${schema.mails.id} IN (${sql.join(unreadIds.map((id) => sql`${id}`), sql`, `)})`);
+  }
+
+  const messages = allMails.map((mail) => {
+    const body = bodyMap.get(mail.id);
+    return {
+      ...mail,
+      body: body?.textContent || "",
+      htmlBody: body?.htmlContent || "",
+      isOwn: mail.fromAddr === myEmail,
+      attachments: [] as any[],
+    };
+  });
+
+  // Attachments
+  const attachments = await db
+    .select()
+    .from(schema.attachments)
+    .where(sql`${schema.attachments.mailId} IN (${sql.join(mailIds.map((id) => sql`${id}`), sql`, `)})`);
+  const attMap = new Map<string, any[]>();
+  for (const att of attachments) {
+    const list = attMap.get(att.mailId) || [];
+    list.push(att);
+    attMap.set(att.mailId, list);
+  }
+  for (const msg of messages) {
+    msg.attachments = attMap.get(msg.id) || [];
+  }
+
+  return c.json({
+    conversation: {
+      id: seed[0].id,
+      subject: seed[0].subject,
+      messages,
+    },
+  });
+});
+
 // ─── GET /api/v1/mails/:id ──────────────────────────────────────────────────
 mailApp.get("/:id", async (c) => {
   const userId = c.get("userId");

@@ -190,6 +190,24 @@ class ApiClient {
     });
   }
 
+  getConversation(id: string) {
+    return this.request<{ conversation: { id: string; subject: string; messages: any[] } }>(`/mails/${id}/conversation`).then((res) => ({
+      conversation: {
+        ...res.conversation,
+        messages: res.conversation.messages.map((m: any) => ({
+          ...normalizeMail(m),
+          body: m.body || '',
+          htmlBody: m.htmlBody || '',
+          isOwn: m.isOwn,
+          isAgent: (m.fromAddr || '').includes('agent'),
+          agentName: m.rawHeaders?.agentName || undefined,
+          encrypted: false,
+          attachments: (m.attachments || []).map((a: any) => ({ id: a.id, filename: a.filename, size: a.size })),
+        })),
+      },
+    }));
+  }
+
   sendMail(data: { to: string[]; cc?: string[]; bcc?: string[]; subject: string; text?: string; html?: string; body?: string; replyTo?: string; importance?: number; encrypt?: boolean; signatureId?: string; attachments?: File[] }) {
     // Map user-friendly 'body' field to 'text' for backend compatibility
     const payload: Record<string, unknown> = {
