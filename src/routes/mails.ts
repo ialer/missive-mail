@@ -157,6 +157,103 @@ mailApp.get("/:id", async (c) => {
   });
 });
 
+// ─── GET /api/v1/mails/:id/conversation ─────────────────────────────────────
+mailApp.get("/:id/conversation", async (c) => {
+  const userId = c.get("userId");
+  const mailId = c.req.param("id");
+  const db = getDb(c.env);
+
+  // Get the seed mail
+  const seed = await db
+    .select()
+    .from(schema.mails)
+    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)))
+    .limit(1);
+
+  if (seed.length === 0) {
+    return c.json({ error: "Mail not found" }, 404);
+  }
+
+  // Normalize subject: strip Re:/Fwd:/Fw: prefixes
+  const baseSubject = seed[0].subject
+    .replace(/^(Re|Fwd?|Aw|Sv):(\s*)/gi, "")
+    .trim()
+    .toLowerCase();
+
+  // Find all mails with matching normalized subject for this user
+  const allMails = await db
+    .select()
+    .from(schema.mails)
+    .where(
+      and(
+        eq(schema.mails.userId, userId),
+        sql`REPLACE(REPLACE(REPLACE(REPLACE(LOWER(${schema.mails.subject}), 're: ', ''), 'fwd: ', ''), 'fw: ', ''), 'aw: ', '') = ${baseSubject}`
+      )
+    )
+    .orderBy(sql`${schema.mails.createdAt} ASC`);
+
+  if (allMails.length === 0) {
+    return c.json({ error: "Conversation not found" }, 404);
+  }
+
+  // Fetch bodies for all mails in the conversation
+  const mailIds = allMails.map((m) => m.id);
+  const bodies = await db
+    .select()
+    .from(schema.mailBodies)
+    .where(sql`${schema.mailBodies.mailId} IN (${sql.join(mailIds.map((id) => sql`${id}`), sql`, `)})`);
+
+  const bodyMap = new Map(bodies.map((b) => [b.mailId, b]));
+
+  // Get current user email for isOwn detection
+  const users = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
+  const myEmail = users[0]?.email || "";
+
+  // Mark all as read
+  const unreadIds = allMails.filter((m) => !m.isRead).map((m) => m.id);
+  if (unreadIds.length > 0) {
+    await db
+      .update(schema.mails)
+      .set({ isRead: true })
+      .where(sql`${schema.mails.id} IN (${sql.join(unreadIds.map((id) => sql`${id}`), sql`, `)})`);
+  }
+
+  // Build messages with body + isOwn
+  const messages = allMails.map((mail) => {
+    const body = bodyMap.get(mail.id);
+    return {
+      ...mail,
+      body: body?.textContent || "",
+      htmlBody: body?.htmlContent || "",
+      isOwn: mail.fromAddr === myEmail,
+      attachments: [] as any[],
+    };
+  });
+
+  // Fetch attachments for all mails
+  const attachments = await db
+    .select()
+    .from(schema.attachments)
+    .where(sql`${schema.attachments.mailId} IN (${sql.join(mailIds.map((id) => sql`${id}`), sql`, `)})`);
+  const attMap = new Map<string, any[]>();
+  for (const att of attachments) {
+    const list = attMap.get(att.mailId) || [];
+    list.push(att);
+    attMap.set(att.mailId, list);
+  }
+  for (const msg of messages) {
+    msg.attachments = attMap.get(msg.id) || [];
+  }
+
+  return c.json({
+    conversation: {
+      id: seed[0].id,
+      subject: seed[0].subject,
+      messages,
+    },
+  });
+});
+
 // ─── POST /api/v1/mails/send ────────────────────────────────────────────────
 mailApp.post("/send", async (c) => {
   const userId = c.get("userId");
@@ -313,6 +410,35 @@ mailApp.post("/:id/reply", async (c) => {
     textContent: parsed.data.text || null,
     htmlContent: parsed.data.html || null,
     rawHeaders: {},
+  });
+
+  // Auto-reply from Agent: create an inbox mail from agent
+  const agentMailId = generateId();
+  const agentBodyId = generateId();
+  const agentReply = `收到你的回复，我已记录并会尽快处理。\n\n——由邮件助理代发`;
+  const agentNow = new Date(Date.now() + 1000); // 1s delay
+
+  await db.insert(schema.mails).values({
+    id: agentMailId,
+    userId,
+    fromAddr: "agent@snbar.top",
+    toAddr: fromAddr,
+    subject: `Re: ${original[0].subject}`,
+    folder: "inbox",
+    isRead: false,
+    isStarred: false,
+    labels: [],
+    importance: 0,
+    spamScore: 0,
+    createdAt: agentNow,
+  });
+
+  await db.insert(schema.mailBodies).values({
+    id: agentBodyId,
+    mailId: agentMailId,
+    textContent: agentReply,
+    htmlContent: null,
+    rawHeaders: { agentName: "邮件助理", source: "auto-reply" },
   });
 
   return c.json({ mailId: newMailId, replyTo: mailId }, 201);
