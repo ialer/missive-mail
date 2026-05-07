@@ -125,10 +125,10 @@ class ApiClient {
     }>('/login', { method: 'POST', body: JSON.stringify({ email, password, turnstileToken }), raw: true });
   }
 
-  register(email: string, password: string, name?: string, turnstileToken?: string) {
+  register(email: string, password: string, name?: string) {
     return this.request('/register', {
       method: 'POST',
-      body: JSON.stringify({ email, password, name, turnstileToken }),
+      body: JSON.stringify({ email, password, name }),
       raw: true,
     });
   }

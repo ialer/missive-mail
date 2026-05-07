@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../lib/auth';
@@ -13,12 +13,12 @@ export default function LoginPage() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [turnstileToken, setTurnstileToken] = useState('');
+  const [showTurnstile, setShowTurnstile] = useState(false);
+  const [pendingLogin, setPendingLogin] = useState(false);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
+  const doLogin = useCallback(async (turnstileToken: string) => {
     setLoading(true);
+    setError('');
     try {
       await login(email, password, turnstileToken);
       navigate('/');
@@ -26,8 +26,26 @@ export default function LoginPage() {
       setError(err.message || t('login.loginFailed'));
     } finally {
       setLoading(false);
+      setShowTurnstile(false);
+      setPendingLogin(false);
     }
+  }, [email, password, login, navigate, t]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    // Show Turnstile first, then login after verification
+    setShowTurnstile(true);
+    setPendingLogin(true);
   };
+
+  const handleTurnstileVerify = useCallback((token: string) => {
+    doLogin(token);
+  }, [doLogin]);
+
+  const handleTurnstileExpire = useCallback(() => {
+    setPendingLogin(false);
+  }, []);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-[var(--bg-primary)] px-4">
@@ -73,17 +91,23 @@ export default function LoginPage() {
             />
           </div>
 
-          <TurnstileWidget
-            onVerify={(token) => setTurnstileToken(token)}
-            onExpire={() => setTurnstileToken('')}
-          />
+          {/* Turnstile appears after clicking login */}
+          {showTurnstile && (
+            <div className="rounded-lg border border-[var(--border-primary)] bg-[var(--bg-secondary)] p-3">
+              <p className="mb-2 text-xs text-[var(--text-muted)]">{t('login.verifyHuman')}</p>
+              <TurnstileWidget
+                onVerify={handleTurnstileVerify}
+                onExpire={handleTurnstileExpire}
+              />
+            </div>
+          )}
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || (showTurnstile && pendingLogin)}
             className="flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-blue-700 disabled:opacity-50"
           >
-            {loading && <Loader2 size={16} className="animate-spin" />}
+            {(loading || (showTurnstile && pendingLogin)) && <Loader2 size={16} className="animate-spin" />}
             {t('login.signIn')}
           </button>
         </form>

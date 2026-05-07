@@ -3,23 +3,35 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../lib/auth';
 import { Mail, Loader2 } from 'lucide-react';
-import TurnstileWidget from '../components/TurnstileWidget';
+
+const EMAIL_DOMAIN = 'snbar.top';
 
 export default function RegisterPage() {
   const { register } = useAuth();
   const navigate = useNavigate();
   const { t } = useTranslation();
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [emailPrefix, setEmailPrefix] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
-  const [turnstileToken, setTurnstileToken] = useState('');
+
+  const fullEmail = `${emailPrefix}@${EMAIL_DOMAIN}`;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+
+    if (!emailPrefix.trim()) {
+      setError(t('register.prefixRequired'));
+      return;
+    }
+
+    if (!/^[a-zA-Z0-9._-]+$/.test(emailPrefix)) {
+      setError(t('register.prefixInvalid'));
+      return;
+    }
 
     if (password !== confirmPassword) {
       setError(t('register.passwordMismatch'));
@@ -33,7 +45,7 @@ export default function RegisterPage() {
 
     setLoading(true);
     try {
-      await register(email, password, name || undefined, turnstileToken);
+      await register(fullEmail, password, name || undefined);
       navigate('/');
     } catch (err: any) {
       setError(err.message || t('register.registerFailed'));
@@ -75,14 +87,22 @@ export default function RegisterPage() {
 
           <div>
             <label className="mb-1.5 block text-sm text-[var(--text-secondary)]">{t('register.emailLabel')}</label>
-            <input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder={t('register.emailPlaceholder')}
-              required
-              className="w-full rounded-lg border border-[var(--border-primary)] bg-[var(--bg-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none transition-colors focus:border-blue-600"
-            />
+            <div className="flex items-center">
+              <input
+                type="text"
+                value={emailPrefix}
+                onChange={(e) => setEmailPrefix(e.target.value)}
+                placeholder={t('register.emailPrefixPlaceholder')}
+                required
+                className="flex-1 rounded-l-lg border border-[var(--border-primary)] bg-[var(--bg-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none transition-colors focus:border-blue-600"
+              />
+              <span className="flex items-center rounded-r-lg border border-l-0 border-[var(--border-primary)] bg-[var(--bg-tertiary)] px-3 py-2.5 text-sm text-[var(--text-muted)]">
+                @{EMAIL_DOMAIN}
+              </span>
+            </div>
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              {fullEmail}
+            </p>
           </div>
 
           <div>
@@ -109,11 +129,6 @@ export default function RegisterPage() {
               className="w-full rounded-lg border border-[var(--border-primary)] bg-[var(--bg-secondary)] px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder-[var(--text-muted)] outline-none transition-colors focus:border-blue-600"
             />
           </div>
-
-          <TurnstileWidget
-            onVerify={(token) => setTurnstileToken(token)}
-            onExpire={() => setTurnstileToken('')}
-          />
 
           <button
             type="submit"

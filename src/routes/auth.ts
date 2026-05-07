@@ -20,7 +20,6 @@ const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(8),
   name: z.string().min(1).max(100).optional(),
-  turnstileToken: z.string().optional(),
 });
 
 const loginSchema = z.object({
@@ -42,14 +41,8 @@ authApp.post("/register", async (c) => {
     return c.json({ error: "Validation failed", details: parsed.error.issues }, 400);
   }
 
-  const { email, password, name, turnstileToken } = parsed.data;
+  const { email, password, name } = parsed.data;
   const db = getDb(c.env);
-
-  // Verify Turnstile (optional if token provided)
-  if (turnstileToken) {
-    const ok = await verifyTurnstile(c.env, turnstileToken, c.req.header("cf-connecting-ip") || "unknown");
-    if (!ok) return c.json({ error: "Captcha verification failed" }, 403);
-  }
 
   // Check if user already exists
   const existing = await db
