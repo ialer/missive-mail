@@ -152,7 +152,20 @@ mailApp.get("/:id/conversation", async (c) => {
     .orderBy(sql`${schema.mails.createdAt} ASC`);
 
   if (allMails.length === 0) {
-    return c.json({ error: "Conversation not found" }, 404);
+    // Fallback: return single mail as conversation
+    return c.json({
+      conversation: {
+        id: seed[0].id,
+        subject: seed[0].subject,
+        messages: [{
+          ...seed[0],
+          body: (await db.select().from(schema.mailBodies).where(eq(schema.mailBodies.mailId, mailId)).limit(1))[0]?.textContent || "",
+          htmlBody: (await db.select().from(schema.mailBodies).where(eq(schema.mailBodies.mailId, mailId)).limit(1))[0]?.htmlContent || "",
+          isOwn: seed[0].fromAddr === (await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1))[0]?.email,
+          attachments: [],
+        }],
+      },
+    });
   }
 
   // Fetch bodies for all mails in the conversation
