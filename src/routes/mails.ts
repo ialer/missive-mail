@@ -1,15 +1,23 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { getDb, schema, eq, and, sql } from "../lib/db";
-import { generateId, authMiddleware, type AuthVariables } from "../lib/auth";
+import { generateId, authMiddleware, agentAuthMiddleware, type AuthVariables } from "../lib/auth";
 import type { Env } from "../worker";
 
 type MailFolder = "inbox" | "sent" | "draft" | "archive" | "spam";
 
 const mailApp = new Hono<{ Bindings: Env; Variables: AuthVariables }>();
 
-// All routes require authentication
-mailApp.use("*", authMiddleware());
+// Combined auth: accept JWT Bearer token OR X-Agent-Token
+mailApp.use("*", async (c, next) => {
+  // Try agent token first
+  const agentToken = c.req.header("X-Agent-Token");
+  if (agentToken) {
+    return agentAuthMiddleware()(c, next);
+  }
+  // Fall back to JWT
+  return authMiddleware()(c, next);
+});
 
 // ─── Validation Schemas ──────────────────────────────────────────────────────
 const sendMailSchema = z.object({
@@ -30,71 +38,82 @@ const replySchema = z.object({
   bcc: z.string().email().or(z.array(z.string().email())).optional(),
 });
 
-const labelSchema = z.object({
-  labels: z.array(z.string()),
-});
-
-// ─── GET /api/v1/mails ───────────────────────────────────────────────────────
+// ─── GET /api/v1/mails ──────────────────────────────────────────────────────
 mailApp.get("/", async (c) => {
   const userId = c.get("userId");
   const db = getDb(c.env);
 
-  const folder = (c.req.query("folder") || "inbox") as MailFolder;
-  const search = c.req.query("search") || "";
-  const page = parseInt(c.req.query("page") || "1", 10);
-  const limit = Math.min(parseInt(c.req.query("limit") || "20", 10), 100);
-  const offset = (page - 1) * limit;
+  const folder = c.req.query("folder") as MailFolder | undefined;
+  const label = c.req.query("label");
+  const search = c.req.query("search");
   const starred = c.req.query("starred") === "true";
   const unread = c.req.query("unread") === "true";
+  const page = parseInt(c.req.query("page") || "1", 10);
+  const limit = parseInt(c.req.query("limit") || "20", 10);
+  const offset = (page - 1) * limit;
 
-  // Build where conditions
-  const conditions = [
-    eq(schema.mails.userId, userId),
-    sql`${schema.mails.folder} = ${folder}`,
-  ];
+  const conditions: any[] = [eq(schema.mails.userId, userId)];
 
-  if (search) {
-    conditions.push(
-      sql`(${schema.mails.subject} LIKE ${"%" + search + "%"} OR ${schema.mails.fromAddr} LIKE ${"%" + search + "%"})`
-    );
+  if (folder) {
+    conditions.push(eq(schema.mails.folder, folder));
   }
-
   if (starred) {
     conditions.push(eq(schema.mails.isStarred, true));
   }
-
   if (unread) {
     conditions.push(eq(schema.mails.isRead, false));
   }
+  if (search) {
+    const like = `%${search}%`;
+    conditions.push(sql`(${schema.mails.subject} LIKE ${like} OR ${schema.mails.fromAddr} LIKE ${like} OR ${schema.mails.toAddr} LIKE ${like})`);
+  }
+  if (label) {
+    conditions.push(sql`EXISTS (SELECT 1 FROM json_each(${schema.mails.labels}) WHERE value = ${label})`);
+  }
 
-  const whereClause = and(...conditions);
+  const where = and(...conditions);
 
-  // Get total count
-  const countResult = await db
+  const total = await db
     .select({ count: sql<number>`count(*)` })
     .from(schema.mails)
-    .where(whereClause);
+    .where(where)
+    .then((r) => r[0]?.count || 0);
 
-  const total = countResult[0]?.count || 0;
-
-  // Get mails
   const mails = await db
     .select()
     .from(schema.mails)
-    .where(whereClause)
+    .where(where)
     .orderBy(sql`${schema.mails.createdAt} DESC`)
     .limit(limit)
     .offset(offset);
 
   return c.json({
     mails,
-    pagination: {
-      page,
-      limit,
-      total,
-      totalPages: Math.ceil(total / limit),
-    },
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
   });
+});
+
+// ─── GET /api/v1/mails/analytics ─────────────────────────────────────────────
+mailApp.get("/analytics", async (c) => {
+  const userId = c.get("userId");
+  const db = getDb(c.env);
+
+  const totals = await db
+    .select({
+      total: sql<number>`count(*)`,
+      unread: sql<number>`sum(case when is_read = 0 then 1 else 0 end)`,
+    })
+    .from(schema.mails)
+    .where(eq(schema.mails.userId, userId))
+    .then((r) => r[0]);
+
+  const byFolder = await db
+    .select({ folder: schema.mails.folder, count: sql<number>`count(*)` })
+    .from(schema.mails)
+    .where(eq(schema.mails.userId, userId))
+    .groupBy(schema.mails.folder);
+
+  return c.json({ totals, byFolder });
 });
 
 // ─── GET /api/v1/mails/:id ──────────────────────────────────────────────────
@@ -103,7 +122,6 @@ mailApp.get("/:id", async (c) => {
   const mailId = c.req.param("id");
   const db = getDb(c.env);
 
-  // Get the mail
   const mails = await db
     .select()
     .from(schema.mails)
@@ -114,7 +132,10 @@ mailApp.get("/:id", async (c) => {
     return c.json({ error: "Mail not found" }, 404);
   }
 
-  const mail = mails[0];
+  // Mark as read
+  if (!mails[0].isRead) {
+    await db.update(schema.mails).set({ isRead: true }).where(eq(schema.mails.id, mailId));
+  }
 
   // Get body
   const bodies = await db
@@ -123,26 +144,16 @@ mailApp.get("/:id", async (c) => {
     .where(eq(schema.mailBodies.mailId, mailId))
     .limit(1);
 
-  const body = bodies[0] || null;
-
   // Get attachments
-  const atts = await db
+  const attachments = await db
     .select()
     .from(schema.attachments)
     .where(eq(schema.attachments.mailId, mailId));
 
-  // Mark as read if not already
-  if (!mail.isRead) {
-    await db
-      .update(schema.mails)
-      .set({ isRead: true })
-      .where(eq(schema.mails.id, mailId));
-  }
-
   return c.json({
-    mail,
-    body,
-    attachments: atts,
+    mail: mails[0],
+    body: bodies[0] || null,
+    attachments,
   });
 });
 
@@ -153,69 +164,27 @@ mailApp.post("/send", async (c) => {
   const parsed = sendMailSchema.safeParse(body);
 
   if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.issues },
-      400
-    );
+    return c.json({ error: "Validation failed", details: parsed.error.issues }, 400);
   }
 
   const db = getDb(c.env);
-
-  // Get user email
-  const users = await db
-    .select()
-    .from(schema.users)
-    .where(eq(schema.users.id, userId))
-    .limit(1);
-
-  if (users.length === 0) {
-    return c.json({ error: "User not found" }, 404);
-  }
-
-  const user = users[0];
   const { to, subject, text, html, cc, bcc, replyTo, importance } = parsed.data;
-  const toAddrs = Array.isArray(to) ? to : [to];
 
-  // Send via Resend
-  const resendApiKey = c.env.CF_EMAIL_SERVICE_API_KEY;
-  let sendResult: { id: string } = { id: "" };
-
-  if (resendApiKey) {
-    // Dynamic import to avoid issues when resend is not configured
-    const { Resend } = await import("resend");
-    const resend = new Resend(resendApiKey);
-    const emailOptions: Record<string, unknown> = {
-      from: `mail@${user.domain || "snbar.top"}`,
-      to: toAddrs,
-      subject,
-      text,
-      html,
-      react: undefined,
-    };
-    if (cc) emailOptions.cc = Array.isArray(cc) ? cc : [cc];
-    if (bcc) emailOptions.bcc = Array.isArray(bcc) ? bcc : [bcc];
-    if (replyTo) emailOptions.replyTo = replyTo;
-
-    try {
-      const result = await resend.emails.send(emailOptions as any);
-      sendResult = { id: result.data?.id || "" };
-    } catch (err) {
-      console.error("Resend error:", err);
-    }
-  }
-
-  // Save to sent folder
   const mailId = generateId();
   const bodyId = generateId();
   const now = new Date();
 
+  // Get user email for from address
+  const users = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
+  const fromAddr = users[0]?.email || userId;
+
   await db.insert(schema.mails).values({
     id: mailId,
     userId,
-    fromAddr: user.email,
-    toAddr: toAddrs.join(", "),
+    fromAddr,
+    toAddr: Array.isArray(to) ? to.join(",") : to,
     subject,
-    folder: "sent" as MailFolder,
+    folder: "sent",
     isRead: true,
     isStarred: false,
     labels: [],
@@ -224,32 +193,72 @@ mailApp.post("/send", async (c) => {
     createdAt: now,
   });
 
-  const mailBodyHeaders: Record<string, string> = {};
-  mailBodyHeaders["message-id"] = sendResult.id;
-  if (cc) mailBodyHeaders.cc = Array.isArray(cc) ? cc.join(", ") : cc;
-  if (bcc) mailBodyHeaders.bcc = Array.isArray(bcc) ? bcc.join(", ") : bcc;
-
   await db.insert(schema.mailBodies).values({
     id: bodyId,
     mailId,
     textContent: text || null,
     htmlContent: html || null,
-    rawHeaders: mailBodyHeaders,
+    rawHeaders: { cc, bcc, replyTo },
   });
 
-  // Audit log
-  await db.insert(schema.auditLogs).values({
-    id: generateId(),
-    userId,
-    agentId: null,
-    action: "mail.send",
-    details: { mailId, to: toAddrs, subject },
-    ip: c.req.header("CF-Connecting-IP") || null,
-    userAgent: c.req.header("User-Agent") || null,
-    createdAt: now,
-  });
+  // If sending to self, also create an inbox copy
+  const toAddrs = Array.isArray(to) ? to : [to];
+  if (toAddrs.includes(fromAddr)) {
+    const inboxMailId = generateId();
+    const inboxBodyId = generateId();
+    await db.insert(schema.mails).values({
+      id: inboxMailId,
+      userId,
+      fromAddr,
+      toAddr: fromAddr,
+      subject,
+      folder: "inbox",
+      isRead: false,
+      isStarred: false,
+      labels: [],
+      importance: importance || 0,
+      spamScore: 0,
+      createdAt: now,
+    });
+    await db.insert(schema.mailBodies).values({
+      id: inboxBodyId,
+      mailId: inboxMailId,
+      textContent: text || null,
+      htmlContent: html || null,
+      rawHeaders: { cc, bcc, replyTo },
+    });
+  }
 
-  return c.json({ mailId, resendId: sendResult.id }, 201);
+  // Try to send via Resend API if configured
+  let sendStatus = "recorded";
+  const resendKey = c.env.RESEND_API_KEY;
+  if (resendKey) {
+    try {
+      const resp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: fromAddr,
+          to: Array.isArray(to) ? to : [to],
+          subject,
+          text,
+          html,
+        }),
+      });
+      if (resp.ok) {
+        sendStatus = "sent";
+      } else {
+        sendStatus = `send_failed_${resp.status}`;
+      }
+    } catch (err) {
+      sendStatus = `send_error: ${String(err)}`;
+    }
+  }
+
+  return c.json({ mailId, status: sendStatus }, 201);
 });
 
 // ─── POST /api/v1/mails/:id/reply ───────────────────────────────────────────
@@ -260,138 +269,53 @@ mailApp.post("/:id/reply", async (c) => {
   const parsed = replySchema.safeParse(body);
 
   if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.issues },
-      400
-    );
+    return c.json({ error: "Validation failed", details: parsed.error.issues }, 400);
   }
 
   const db = getDb(c.env);
 
-  // Get original mail
-  const origMails = await db
+  // Find original mail
+  const original = await db
     .select()
     .from(schema.mails)
     .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)))
     .limit(1);
 
-  if (origMails.length === 0) {
+  if (original.length === 0) {
     return c.json({ error: "Original mail not found" }, 404);
   }
 
-  const origMail = origMails[0];
-
-  // Get user email
-  const users = await db
-    .select()
-    .from(schema.users)
-    .where(eq(schema.users.id, userId))
-    .limit(1);
-
-  if (users.length === 0) {
-    return c.json({ error: "User not found" }, 404);
-  }
-
-  const user = users[0];
-  const { text, html, cc, bcc } = parsed.data;
-  const replySubject = origMail.subject.startsWith("Re: ")
-    ? origMail.subject
-    : `Re: ${origMail.subject}`;
-
-  // Send via Resend
-  const resendApiKey = c.env.CF_EMAIL_SERVICE_API_KEY;
-  let sendResult: { id: string } = { id: "" };
-
-  if (resendApiKey) {
-    const { Resend } = await import("resend");
-    const resend = new Resend(resendApiKey);
-    const emailOptions: Record<string, unknown> = {
-      from: `mail@${user.domain || "snbar.top"}`,
-      to: [origMail.fromAddr],
-      subject: replySubject,
-      text,
-      html,
-      react: undefined,
-    };
-    if (cc) emailOptions.cc = Array.isArray(cc) ? cc : [cc];
-    if (bcc) emailOptions.bcc = Array.isArray(bcc) ? bcc : [bcc];
-    emailOptions.replyTo = user.email;
-
-    try {
-      const result = await resend.emails.send(emailOptions as any);
-      sendResult = { id: result.data?.id || "" };
-    } catch (err) {
-      console.error("Resend error:", err);
-    }
-  }
-
-  // Save reply to sent folder
-  const replyId = generateId();
+  const newMailId = generateId();
   const bodyId = generateId();
   const now = new Date();
 
+  const users = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
+  const fromAddr = users[0]?.email || userId;
+
   await db.insert(schema.mails).values({
-    id: replyId,
+    id: newMailId,
     userId,
-    fromAddr: user.email,
-    toAddr: origMail.fromAddr,
-    subject: replySubject,
-    folder: "sent" as MailFolder,
+    fromAddr,
+    toAddr: original[0].fromAddr,
+    subject: `Re: ${original[0].subject}`,
+    folder: "sent",
     isRead: true,
     isStarred: false,
     labels: [],
-    importance: origMail.importance,
+    importance: 0,
     spamScore: 0,
     createdAt: now,
   });
 
   await db.insert(schema.mailBodies).values({
     id: bodyId,
-    mailId: replyId,
-    textContent: text || null,
-    htmlContent: html || null,
-    rawHeaders: {
-      "in-reply-to": origMail.id,
-      "message-id": sendResult.id,
-    },
+    mailId: newMailId,
+    textContent: parsed.data.text || null,
+    htmlContent: parsed.data.html || null,
+    rawHeaders: {},
   });
 
-  return c.json({ replyId, resendId: sendResult.id }, 201);
-});
-
-// ─── PUT /api/v1/mails/:id/label ────────────────────────────────────────────
-mailApp.put("/:id/label", async (c) => {
-  const userId = c.get("userId");
-  const mailId = c.req.param("id");
-  const body = await c.req.json();
-  const parsed = labelSchema.safeParse(body);
-
-  if (!parsed.success) {
-    return c.json(
-      { error: "Validation failed", details: parsed.error.issues },
-      400
-    );
-  }
-
-  const db = getDb(c.env);
-
-  // Verify mail ownership
-  const mails = await db
-    .select()
-    .from(schema.mails)
-    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)))
-    .limit(1);
-
-  if (mails.length === 0) {
-    return c.json({ error: "Mail not found" }, 404);
-  }
-
-  await db
-    .update(schema.mails)
-    .set({ labels: parsed.data.labels })
-    .where(eq(schema.mails.id, mailId));
-
-  return c.json({ success: true, labels: parsed.data.labels });
+  return c.json({ mailId: newMailId, replyTo: mailId }, 201);
 });
 
 // ─── POST /api/v1/mails/:id/archive ─────────────────────────────────────────
@@ -400,90 +324,87 @@ mailApp.post("/:id/archive", async (c) => {
   const mailId = c.req.param("id");
   const db = getDb(c.env);
 
-  // Verify mail ownership
-  const mails = await db
-    .select()
-    .from(schema.mails)
-    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)))
-    .limit(1);
+  await db
+    .update(schema.mails)
+    .set({ folder: "archive" })
+    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)));
 
-  if (mails.length === 0) {
-    return c.json({ error: "Mail not found" }, 404);
-  }
+  return c.json({ success: true });
+});
+
+// ─── PUT /api/v1/mails/:id/label ────────────────────────────────────────────
+mailApp.put("/:id/label", async (c) => {
+  const userId = c.get("userId");
+  const mailId = c.req.param("id");
+  const { labels } = await c.req.json();
+  const db = getDb(c.env);
 
   await db
     .update(schema.mails)
-    .set({ folder: "archive" as MailFolder })
-    .where(eq(schema.mails.id, mailId));
+    .set({ labels })
+    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)));
 
-  return c.json({ success: true, folder: "archive" });
+  return c.json({ success: true });
 });
 
-// ─── DELETE /api/v1/mails/:id ────────────────────────────────────────────────
+// ─── DELETE /api/v1/mails/:id ───────────────────────────────────────────────
 mailApp.delete("/:id", async (c) => {
   const userId = c.get("userId");
   const mailId = c.req.param("id");
   const db = getDb(c.env);
 
-  // Verify mail ownership
-  const mails = await db
-    .select()
-    .from(schema.mails)
-    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)))
-    .limit(1);
-
-  if (mails.length === 0) {
-    return c.json({ error: "Mail not found" }, 404);
-  }
-
-  // Delete attachments from R2
-  const atts = await db
-    .select()
-    .from(schema.attachments)
-    .where(eq(schema.attachments.mailId, mailId));
-
-  for (const att of atts) {
-    try {
-      await c.env.R2.delete(att.r2Key);
-    } catch {
-      // Ignore R2 deletion errors
-    }
-  }
-
-  // Delete mail body
-  await db.delete(schema.mailBodies).where(eq(schema.mailBodies.mailId, mailId));
-
-  // Delete attachments record
-  await db.delete(schema.attachments).where(eq(schema.attachments.mailId, mailId));
-
-  // Delete the mail itself
-  await db.delete(schema.mails).where(eq(schema.mails.id, mailId));
+  await db
+    .delete(schema.mails)
+    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)));
 
   return c.json({ success: true });
 });
 
-// ─── GET /api/v1/mails/:id/status ────────────────────────────────────────────
-mailApp.get("/:id/status", async (c) => {
-  const userId = c.get("userId");
-  const mailId = c.req.param("id");
-  const db = getDb(c.env);
+// ─── POST /api/v1/mails/inbound (Agent/External inbound) ─────────────────────
+mailApp.post("/inbound", async (c) => {
+  const body = await c.req.json();
+  const { from, to, subject, text, html } = body;
 
-  const mails = await db
-    .select({
-      id: schema.mails.id,
-      isRead: schema.mails.isRead,
-      isStarred: schema.mails.isStarred,
-      labels: schema.mails.labels,
-    })
-    .from(schema.mails)
-    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)))
-    .limit(1);
-
-  if (mails.length === 0) {
-    return c.json({ error: "Mail not found" }, 404);
+  if (!from || !to || !subject) {
+    return c.json({ error: "Missing required fields: from, to, subject" }, 400);
   }
 
-  return c.json(mails[0]);
+  const db = getDb(c.env);
+
+  // Find recipient user via KV mapping
+  const userId = await c.env.KV.get(`email:${to.toLowerCase()}`);
+  if (!userId) {
+    return c.json({ error: `No mailbox found for ${to}` }, 404);
+  }
+
+  const mailId = generateId();
+  const bodyId = generateId();
+  const now = new Date();
+
+  await db.insert(schema.mails).values({
+    id: mailId,
+    userId,
+    fromAddr: from,
+    toAddr: to,
+    subject,
+    folder: "inbox" as const,
+    isRead: false,
+    isStarred: false,
+    labels: [],
+    importance: 0,
+    spamScore: 0,
+    createdAt: now,
+  });
+
+  await db.insert(schema.mailBodies).values({
+    id: bodyId,
+    mailId,
+    textContent: text || null,
+    htmlContent: html || null,
+    rawHeaders: { source: "agent-api" },
+  });
+
+  return c.json({ mailId, folder: "inbox" }, 201);
 });
 
 export { mailApp as mailRoutes };

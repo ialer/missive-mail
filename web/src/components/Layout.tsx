@@ -1,7 +1,8 @@
-import { useState, type ReactNode } from 'react';
+import { useState, useEffect, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../lib/auth';
+import { api } from '../lib/api';
 import { cn } from '../lib/utils';
 import {
   Inbox,
@@ -36,14 +37,6 @@ const folderPaths: Record<string, string> = {
   archive: '/archive',
   trash: '/trash',
 };
-const folderCounts: Record<string, number> = {
-  inbox: 12,
-  sent: 0,
-  drafts: 2,
-  archive: 0,
-  trash: 0,
-};
-
 export default function Layout({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth();
   const location = useLocation();
@@ -53,6 +46,29 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [labels] = useState<{ id: string; name: string }[]>([]);
+  const [folderCounts, setFolderCounts] = useState<Record<string, number>>({
+    inbox: 0, sent: 0, drafts: 0, archive: 0, trash: 0,
+  });
+
+  useEffect(() => {
+    const fetchCounts = async () => {
+      try {
+        const [inbox, sent, archive] = await Promise.all([
+          api.getMails({ folder: 'inbox', limit: 1 }),
+          api.getMails({ folder: 'sent', limit: 1 }),
+          api.getMails({ folder: 'archive', limit: 1 }),
+        ]);
+        setFolderCounts({
+          inbox: inbox.total,
+          sent: sent.total,
+          drafts: 0,
+          archive: archive.total,
+          trash: 0,
+        });
+      } catch {}
+    };
+    fetchCounts();
+  }, [location.pathname]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();

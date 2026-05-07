@@ -77,7 +77,18 @@ export default function ConversationView() {
   });
 
   const conversation: Conversation | undefined = data?.mail
-    ? { id: data.mail.id, subject: data.mail.subject, messages: [data.mail] }
+    ? {
+        id: data.mail.id,
+        subject: data.mail.subject,
+        messages: [{
+          ...data.mail,
+          body: data.body?.text || data.mail.textContent || '',
+          htmlBody: data.body?.html || data.mail.htmlContent || '',
+          attachments: data.attachments || [],
+          readReceipt: undefined,
+          isOwn: true,
+        }],
+      }
     : undefined;
 
   if (conversation && !data?.mail?.read && data?.mail) {
@@ -307,7 +318,7 @@ export default function ConversationView() {
               </div>
 
               {/* Attachments */}
-              {msg.attachments.length > 0 && (
+              {msg.attachments?.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-2">
                   {msg.attachments.map((att) => (
                     <button

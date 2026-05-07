@@ -78,7 +78,9 @@ class ApiClient {
     const url = new URL(path.startsWith('http') ? path : `${basePath}${path}`, window.location.origin);
 
     if (params) {
-      Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
+      });
     }
 
     const headers = new Headers(fetchConfig.headers);
@@ -122,11 +124,11 @@ class ApiClient {
       refreshToken: string;
       requiresTwoFactor?: boolean;
       tempToken?: string;
-    }>('/login', { method: 'POST', body: JSON.stringify({ email, password, turnstileToken }), raw: true });
+    }>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password, turnstileToken }), raw: true });
   }
 
   register(email: string, password: string, name?: string) {
-    return this.request('/register', {
+    return this.request('/auth/register', {
       method: 'POST',
       body: JSON.stringify({ email, password, name }),
       raw: true,
@@ -134,11 +136,11 @@ class ApiClient {
   }
 
   logout() {
-    return this.request('/logout', { method: 'POST' });
+    return this.request('/auth/logout', { method: 'POST' });
   }
 
   getProfile() {
-    return this.request<{ user: any }>('/me', { raw: true });
+    return this.request<{ user: any }>('/auth/me', { raw: true });
   }
 
   // ─── Profile (under /admin) ────────────────────────────────────────────────

@@ -12,7 +12,6 @@ import { MailMCP } from "./mcp/mail-mcp";
 import { generateId } from "./lib/auth";
 import * as schema from "./schema";
 import queueConsumer from "./lib/queue";
-
 // ─── Env Interface (matches wrangler.toml bindings + secrets) ────────────────
 export interface Env {
   DB: D1Database;
@@ -27,6 +26,9 @@ export interface Env {
 
 // ─── Hono App ────────────────────────────────────────────────────────────────
 const app = new Hono<{ Bindings: Env }>();
+
+// MCP Agent (Durable Object based)
+const mcpHandler = MailMCP.mount("/mcp", { binding: "MCP_AGENT" });
 
 // Global middleware
 app.use("*", logger());
@@ -260,7 +262,13 @@ async function handleEmail(
 export { MailMCP };
 
 export default {
-  fetch: app.fetch,
+  fetch: async (request: Request, env: Env, ctx: ExecutionContext) => {
+    const url = new URL(request.url);
+    if (url.pathname === "/mcp" || url.pathname.startsWith("/mcp/message")) {
+      return mcpHandler.fetch(request, env as any, ctx);
+    }
+    return app.fetch(request, env, ctx);
+  },
   queue: queueConsumer.queue,
   email: handleEmail,
 };

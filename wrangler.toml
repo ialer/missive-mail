@@ -39,3 +39,7 @@ new_sqlite_classes = ["MailMCP"]
 [assets]
 directory = "web/dist"
 binding = "ASSETS"
+
+# Environment Variables
+[vars]
+RESEND_API_KEY = "re_TXba64es_5EAcNjaiBtLmduvCcfNSdtFX"
