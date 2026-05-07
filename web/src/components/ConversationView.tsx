@@ -91,14 +91,17 @@ export default function ConversationView() {
     setSending(true);
     try {
       const lastMsg = conversation.messages[conversation.messages.length - 1];
-      await api.replyMail(lastMsg.id, { text: replyText });
+      const result = await api.replyMail(lastMsg.id, { text: replyText });
+      console.log('Reply sent:', result);
       setReplyText('');
-      // Invalidate both conversation and mail queries
-      queryClient.invalidateQueries({ queryKey: ['conversation', id] });
-      queryClient.invalidateQueries({ queryKey: ['mail', id] });
-      queryClient.invalidateQueries({ queryKey: ['mails'] });
+      // Invalidate and refetch
+      await queryClient.invalidateQueries({ queryKey: ['conversation', id] });
+      await queryClient.invalidateQueries({ queryKey: ['mail', id] });
+      await queryClient.invalidateQueries({ queryKey: ['mails'] });
+      alert('回复已发送');
     } catch (err) {
       console.error('Send failed:', err);
+      alert('发送失败: ' + (err as Error).message);
     } finally {
       setSending(false);
     }
