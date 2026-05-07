@@ -423,6 +423,31 @@ mailApp.post("/:id/reply", async (c) => {
     rawHeaders: {},
   });
 
+  // Also create inbox copy so reply appears in conversation thread
+  const inboxMailId = generateId();
+  const inboxBodyId = generateId();
+  await db.insert(schema.mails).values({
+    id: inboxMailId,
+    userId,
+    fromAddr,
+    toAddr: original[0].fromAddr,
+    subject: `Re: ${original[0].subject}`,
+    folder: "inbox",
+    isRead: true,
+    isStarred: false,
+    labels: [],
+    importance: 0,
+    spamScore: 0,
+    createdAt: now,
+  });
+  await db.insert(schema.mailBodies).values({
+    id: inboxBodyId,
+    mailId: inboxMailId,
+    textContent: parsed.data.text || null,
+    htmlContent: parsed.data.html || null,
+    rawHeaders: {},
+  });
+
   return c.json({ mailId: newMailId, replyTo: mailId }, 201);
 });
 
