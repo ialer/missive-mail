@@ -185,7 +185,7 @@ mailApp.post("/send", async (c) => {
     const { Resend } = await import("resend");
     const resend = new Resend(resendApiKey);
     const emailOptions: Record<string, unknown> = {
-      from: user.email,
+      from: `mail@${user.domain || "snbar.top"}`,
       to: toAddrs,
       subject,
       text,
@@ -306,7 +306,7 @@ mailApp.post("/:id/reply", async (c) => {
     const { Resend } = await import("resend");
     const resend = new Resend(resendApiKey);
     const emailOptions: Record<string, unknown> = {
-      from: user.email,
+      from: `mail@${user.domain || "snbar.top"}`,
       to: [origMail.fromAddr],
       subject: replySubject,
       text,
