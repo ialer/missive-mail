@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { getDb, schema, eq, and, sql } from "../lib/db";
+import { getDb, schema, eq, and, like, sql } from "../lib/db";
 import { generateId, authMiddleware, agentAuthMiddleware, type AuthVariables } from "../lib/auth";
 import type { Env } from "../worker";
 
@@ -200,6 +200,15 @@ mailApp.get("/:id/conversation", async (c) => {
     };
   });
 
+  // Deduplicate: same sender + subject + timestamp = same message (sent/inbox copies)
+  const seen = new Set<string>();
+  const deduped = messages.filter((m) => {
+    const key = `${m.fromAddr}::${m.subject}::${m.createdAt}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
   // Attachments
   const attachments = await db
     .select()
@@ -211,7 +220,7 @@ mailApp.get("/:id/conversation", async (c) => {
     list.push(att);
     attMap.set(att.mailId, list);
   }
-  for (const msg of messages) {
+  for (const msg of deduped) {
     msg.attachments = attMap.get(msg.id) || [];
   }
 
@@ -219,7 +228,7 @@ mailApp.get("/:id/conversation", async (c) => {
     conversation: {
       id: seed[0].id,
       subject: seed[0].subject,
-      messages,
+      messages: deduped,
     },
   });
 });
@@ -400,11 +409,35 @@ mailApp.post("/:id/reply", async (c) => {
   const users = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
   const fromAddr = users[0]?.email || userId;
 
+  // Find the correct reply recipient by searching the entire conversation thread
+  // for the first sender who is NOT the current user
+  // Strip all Re:/RE: prefixes to get core subject
+  let coreSubject = original[0].subject.trim();
+  while (/^Re:\s*/i.test(coreSubject)) {
+    coreSubject = coreSubject.replace(/^Re:\s*/i, "");
+  }
+  const threadMails = await db
+    .select()
+    .from(schema.mails)
+    .where(
+      and(
+        eq(schema.mails.userId, userId),
+        like(schema.mails.subject, `%${coreSubject}%`)
+      )
+    );
+  let replyTo = original[0].toAddr;
+  for (let i = 0; i < threadMails.length; i++) {
+    if (threadMails[i].fromAddr !== fromAddr) {
+      replyTo = threadMails[i].fromAddr;
+      break;
+    }
+  }
+
   await db.insert(schema.mails).values({
     id: newMailId,
     userId,
     fromAddr,
-    toAddr: original[0].fromAddr,
+    toAddr: replyTo,
     subject: `Re: ${original[0].subject}`,
     folder: "sent",
     isRead: true,
@@ -430,7 +463,7 @@ mailApp.post("/:id/reply", async (c) => {
     id: inboxMailId,
     userId,
     fromAddr,
-    toAddr: original[0].fromAddr,
+    toAddr: replyTo,
     subject: `Re: ${original[0].subject}`,
     folder: "inbox",
     isRead: true,

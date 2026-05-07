@@ -22,6 +22,7 @@ export interface Env {
   JWT_SECRET?: string;
   TURNSTILE_SECRET_KEY?: string;
   CF_EMAIL_SERVICE_API_KEY?: string;
+  RESEND_API_KEY?: string;
 }
 
 // ─── Hono App ────────────────────────────────────────────────────────────────
