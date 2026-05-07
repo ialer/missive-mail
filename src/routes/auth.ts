@@ -94,7 +94,7 @@ authApp.post("/register", async (c) => {
 
   return c.json(
     {
-      user: { id, email: email.toLowerCase(), name },
+      user: { id, email: email.toLowerCase(), name, role: "user" },
       accessToken,
       refreshToken,
     },
@@ -206,7 +206,7 @@ authApp.post("/login", async (c) => {
   });
 
   return c.json({
-    user: { id: user.id, email: user.email, name: user.name },
+    user: { id: user.id, email: user.email, name: user.name, role: user.role },
     accessToken,
     refreshToken,
   });
@@ -306,6 +306,7 @@ authApp.get("/me", authMiddleware(), async (c) => {
       id: schema.users.id,
       email: schema.users.email,
       name: schema.users.name,
+      role: schema.users.role,
       totpEnabled: schema.users.totpEnabled,
       createdAt: schema.users.createdAt,
       updatedAt: schema.users.updatedAt,
