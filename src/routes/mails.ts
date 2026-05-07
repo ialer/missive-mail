@@ -481,7 +481,37 @@ mailApp.post("/:id/reply", async (c) => {
     rawHeaders: {},
   });
 
-  return c.json({ mailId: newMailId, replyTo: mailId }, 201);
+  // Try to send via Resend API if configured
+  let sendStatus = "recorded";
+  const resendKey = c.env.RESEND_API_KEY;
+  if (resendKey) {
+    try {
+      const resp = await fetch("https://api.resend.com/emails", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${resendKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          from: fromAddr,
+          to: [replyTo],
+          subject: `Re: ${original[0].subject}`,
+          text: parsed.data.text || undefined,
+          html: parsed.data.html || undefined,
+        }),
+      });
+      if (resp.ok) {
+        sendStatus = "sent";
+      } else {
+        const err = await resp.text();
+        sendStatus = `send_failed_${resp.status}: ${err}`;
+      }
+    } catch (err) {
+      sendStatus = `send_error: ${String(err)}`;
+    }
+  }
+
+  return c.json({ mailId: newMailId, replyTo: mailId, status: sendStatus }, 201);
 });
 
 // ─── POST /api/v1/mails/:id/archive ─────────────────────────────────────────
