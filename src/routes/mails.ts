@@ -412,11 +412,64 @@ mailApp.post("/:id/reply", async (c) => {
     rawHeaders: {},
   });
 
-  // Auto-reply from Agent: create an inbox mail from agent
+  // AI auto-reply from Agent
   const agentMailId = generateId();
   const agentBodyId = generateId();
-  const agentReply = `收到你的回复，我已记录并会尽快处理。\n\n——由邮件助理代发`;
-  const agentNow = new Date(Date.now() + 1000); // 1s delay
+  const agentNow = new Date(Date.now() + 1000);
+
+  // Build conversation context for AI
+  const threadMails = await db
+    .select()
+    .from(schema.mails)
+    .where(
+      sql`REPLACE(REPLACE(REPLACE(REPLACE(LOWER(${schema.mails.subject}), 're: ', ''), 'fwd: ', ''), 'fw: ', ''), 'aw: ', '') = ${original[0].subject.replace(/^(Re|Fwd?|Aw|Sv):(\s*)/gi, "").trim().toLowerCase()}`
+    )
+    .orderBy(sql`${schema.mails.createdAt} ASC`)
+    .limit(20);
+  const threadIds = threadMails.map((m) => m.id);
+  const threadBodies = threadIds.length > 0
+    ? await db.select().from(schema.mailBodies).where(sql`${schema.mailBodies.mailId} IN (${sql.join(threadIds.map((id) => sql`${id}`), sql`, `)})`)
+    : [];
+  const bodyMap = new Map(threadBodies.map((b) => [b.mailId, b.textContent || ""]));
+  const users2 = await db.select().from(schema.users).where(eq(schema.users.id, userId)).limit(1);
+  const myEmail2 = users2[0]?.email || "";
+
+  const conversationHistory = threadMails.map((m) => ({
+    role: m.fromAddr === myEmail2 ? ("user" as const) : ("assistant" as const),
+    content: bodyMap.get(m.id) || "",
+  }));
+
+  // Call AI API
+  let agentReply = "收到你的回复，我已记录并会尽快处理。";
+  try {
+    const aiResp = await fetch("https://token-plan-sgp.xiaomimimo.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": "Bearer tp-sonw2b1hh6l333o5zr3cb6eqx6i4laa40kaglfqziaiju2wp",
+      },
+      body: JSON.stringify({
+        model: "mimo-v2-omni",
+        messages: [
+          {
+            role: "system",
+            content: "你是一个邮件助理（Agent），代号「邮件助理」。你的职责是：\n1. 用简洁专业的中文回复邮件\n2. 回复要有帮助性，不要重复用户的话\n3. 如果是简单确认就简短回复，如果是问题就给出有用的回答\n4. 回复末尾加上「——由邮件助理代发」",
+          },
+          ...conversationHistory,
+        ],
+        max_tokens: 500,
+        temperature: 0.7,
+      }),
+    });
+    if (aiResp.ok) {
+      const aiData = await aiResp.json() as any;
+      const content = aiData.choices?.[0]?.message?.content;
+      if (content) agentReply = content;
+    }
+  } catch (err) {
+    // Fallback to static reply on API error
+    console.error("AI reply failed:", err);
+  }
 
   await db.insert(schema.mails).values({
     id: agentMailId,
