@@ -11,6 +11,8 @@ GitHub 通知 → 收件箱 → Agent 自动创建 Issue
 客户咨询   → 收件箱 → Agent 草稿回复 → 人工确认发送
 ```
 
+**线上地址:** [mail.snbar.top](https://mail.snbar.top)
+
 ---
 
 ## ⚡ 核心特性
@@ -25,7 +27,7 @@ missive-mail 提供三种 Agent 接入方式，覆盖所有场景：
 
 ```typescript
 // Hermes / OpenClaw / 任何 MCP 客户端直接连接
-const tools = await mcp.connect("https://missive-mail.ialer.workers.dev/mcp");
+const tools = await mcp.connect("https://mail.snbar.top/mcp");
 
 // 7 个内置 Tools
 await tools.mail_list({ folder: "inbox", filter: "from:github.com" });
@@ -40,7 +42,6 @@ await tools.mail_search({ query: "发票 OR invoice" });
 **特性：**
 - Streamable HTTP 传输（官方协议）
 - 每个 Agent 连接有独立状态（记住上下文、缓存查询结果）
-- 内置 OAuth 支持（可选）
 - Agent 签名：`——由「{agent_name}」代发`
 
 #### REST API
@@ -50,13 +51,13 @@ await tools.mail_search({ query: "发票 OR invoice" });
 ```bash
 # Agent 认证（不使用 JWT，直接 API Key）
 curl -H "X-Agent-Token: aam_xxxxxxxx" \
-     https://missive-mail.ialer.workers.dev/api/v1/mails
+     https://mail.snbar.top/api/v1/mails
 
 # 发送邮件
 curl -X POST -H "X-Agent-Token: aam_xxxxxxxx" \
      -H "Content-Type: application/json" \
      -d '{"to":"user@example.com","subject":"Report","text":"Daily summary..."}' \
-     https://missive-mail.ialer.workers.dev/api/v1/mails/send
+     https://mail.snbar.top/api/v1/mails/send
 ```
 
 #### Webhook 事件推送
@@ -76,7 +77,7 @@ POST /api/v1/webhooks
 // 推送格式
 {
   "event": "mail.received",
-  "timestamp": "2026-05-07T12:00:00Z",
+  "timestamp": "2026-05-08T12:00:00Z",
   "mail": { "id": "...", "from": "alert@github.com", "subject": "Issue #42" },
   "signature": "hmac-sha256=..."
 }
@@ -86,27 +87,24 @@ POST /api/v1/webhooks
 
 | 层级 | 措施 |
 |---|---|
-| 认证 | JWT + Agent API Key + Turnstile CAPTCHA |
+| 认证 | JWT（Access 15min + Refresh 7d）+ Agent API Key + Turnstile CAPTCHA |
 | 2FA | TOTP 双因素 + 恢复码 + 放宽策略 |
 | 限流 | KV 滑动窗口（IP/用户/Agent 三级） |
-| 加密 | PGP 端到端（浏览器端 openpgp.js） |
 | 传输 | CF 自动 SPF/DKIM/DMARC + TLS |
 | 审计 | D1 全操作日志 + 登录历史 |
-| 垃圾过滤 | 5 层过滤链 |
 
 ### 🌐 双语界面
 
 - 🇨🇳 中文（默认）/ 🇺🇸 English
-- 300+ 翻译键，覆盖所有页面
+- 171 翻译键，覆盖所有页面
 - 顶栏一键切换，localStorage 记忆
 
 ### 📧 邮件能力
 
-- **收信**: CF Email Routing（免费无限）+ postal-mime 解析
-- **发信**: CF Email Service（3,000封/月免费）
+- **收信**: CF Email Worker（postal-mime 解析）+ `/api/v1/mails/inbound` API
+- **发信**: Resend API（支持外部邮箱投递）
 - **存储**: D1 结构化 + R2 附件 + KV 缓存
-- **追踪**: D1 原生已读 + MDN 回执 + 追踪像素
-- **对话**: 气泡式邮件视图，Agent 代发标记
+- **对话**: 线程式邮件视图，去重 sent/inbox 副本，正确识别回复收件人
 
 ---
 
@@ -128,7 +126,7 @@ POST /api/v1/webhooks
 │  └──────────────────┘  └──────────────────────────────┘  │
 │                                                          │
 │  ┌──────────────────┐                                    │
-│  │  CF Email Service│  ← 发信出口                        │
+│  │  Resend API      │  ← 发信出口（外部邮箱投递）         │
 │  └──────────────────┘                                    │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -140,13 +138,13 @@ POST /api/v1/webhooks
 | MCP | CF Agents SDK（McpAgent + Durable Object） |
 | 数据库 | D1（SQLite）+ Drizzle ORM |
 | 缓存 | KV（限流/会话/Token） |
-| 存储 | R2（附件/静态资源） |
+| 存储 | R2（附件） |
 | 队列 | CF Queues（Webhook 异步投递 + DLQ） |
-| 前端 | React + TailwindCSS + shadcn/ui |
+| 前端 | React 19 + TailwindCSS 4 + Vite 6 |
 | 国际化 | react-i18next（中/英） |
 | 邮件解析 | postal-mime |
-| PGP | openpgp.js v6（浏览器端） |
-| 测试 | Vitest（70 tests） |
+| 发信 | Resend API |
+| 测试 | Vitest（71 tests） |
 
 ---
 
@@ -176,22 +174,25 @@ npm test
 npm run build:web
 ```
 
-### 一键部署
+### 部署
 
 ```bash
 # 设置 Cloudflare 认证
-export CLOUDFLARE_API_TOKEN=<your-token>
+export CLOUDFLARE_API_TOKEN=your_token_here
 
-# 一键部署（创建 D1/KV/R2/Queue + 迁移 + 设置密钥 + 构建 + 部署）
-bash scripts/deploy.sh
+# 部署 Worker（含前端静态资源）
+npm run build:web
+npm run deploy
 ```
 
-### 配置邮件路由
+### 环境变量
 
-```bash
-# 配置 CF Email Routing（需要在 CF Dashboard 操作）
-bash scripts/setup-email.sh yourdomain.com
-```
+| 变量 | 说明 | 必填 |
+|---|---|---|
+| `JWT_SECRET` | JWT 签名密钥 | ✅ |
+| `RESEND_API_KEY` | Resend API Key（发信） | ✅ |
+| `TURNSTILE_SECRET_KEY` | Turnstile CAPTCHA 密钥 | 可选 |
+| `TURNSTILE_SITE_KEY` | Turnstile 前端 Key | 可选 |
 
 ---
 
@@ -203,7 +204,7 @@ bash scripts/setup-email.sh yourdomain.com
 # hermes config.yaml
 mcp_servers:
   missive-mail:
-    url: https://missive-mail.ialer.workers.dev/mcp
+    url: https://mail.snbar.top/mcp
     transport: streamable-http
 ```
 
@@ -213,20 +214,11 @@ mcp_servers:
 {
   "mcpServers": {
     "missive-mail": {
-      "url": "https://missive-mail.ialer.workers.dev/mcp",
+      "url": "https://mail.snbar.top/mcp",
       "transport": "streamable-http"
     }
   }
 }
-```
-
-### 自定义 Agent 签名
-
-```bash
-# 创建 Agent 时设置签名模板
-curl -X POST -H "X-Agent-Token: aam_xxxxxxxx" \
-  -d '{"name":"my-agent","signature_template":"——由「{name}」代发"}' \
-  https://missive-mail.ialer.workers.dev/api/v1/agents
 ```
 
 ### 权限矩阵
@@ -271,17 +263,15 @@ curl -X POST -H "X-Agent-Token: aam_xxxxxxxx" \
 | body | string | 是 | 正文 |
 | cc | string | 否 | 抄送 |
 | bcc | string | 否 | 密送 |
-| signature | string | 否 | 自定义签名（覆盖默认） |
 
 ### `mail_reply`
 
-回复邮件。
+回复邮件。自动识别正确收件人（扫描整个对话线程），通过 Resend API 发送。
 
 | 参数 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | id | string | 是 | 原邮件 ID |
 | body | string | 是 | 回复正文 |
-| signature | string | 否 | 自定义签名 |
 
 ### `mail_manage`
 
@@ -324,32 +314,49 @@ missive-mail/
 │   │   ├── auth.ts            # JWT + 密码 + API Key
 │   │   ├── db.ts              # D1 连接
 │   │   ├── queue.ts           # Webhook Queue Producer/Consumer
-│   │   ├── spam.ts            # 5 层垃圾过滤
+│   │   ├── spam.ts            # 垃圾过滤
 │   │   ├── rate-limit.ts      # KV 滑动窗口限流
 │   │   └── turnstile.ts       # Turnstile CAPTCHA
 │   └── routes/
 │       ├── auth.ts            # 认证路由
-│       ├── mails.ts           # 邮件 CRUD
+│       ├── mails.ts           # 邮件 CRUD + 对话线程 + 回复
 │       ├── agents.ts          # Agent 管理
 │       ├── webhooks.ts        # Webhook 管理
 │       └── admin.ts           # 管理后台
-├── web/                       # React 前端（中/英双语）
+├── web/                       # React 19 前端（中/英双语）
+│   └── src/
+│       ├── components/        # ConversationView, MailList, ComposeMail...
+│       ├── pages/             # Login, Register, Admin, Settings
+│       ├── lib/api.ts         # API 客户端（含 token 刷新）
+│       └── i18n/              # 国际化（171 翻译键）
 ├── migrations/                # D1 迁移 SQL
-├── scripts/                   # 部署脚本
-├── test/                      # 测试（70 tests）
+├── test/                      # 测试（71 tests）
 └── wrangler.toml              # CF Workers 配置
 ```
 
 ---
 
-## 🔑 环境变量
+## 📋 API 路由
 
-| 变量 | 说明 | 必填 |
+| 方法 | 路径 | 说明 |
 |---|---|---|
-| `JWT_SECRET` | JWT 签名密钥 | ✅ |
-| `TURNSTILE_SECRET_KEY` | Turnstile CAPTCHA 密钥 | 可选 |
-| `TURNSTILE_SITE_KEY` | Turnstile 前端 Key | 可选 |
-| `CF_EMAIL_SERVICE_API_KEY` | CF Email Service API Key | 可选 |
+| POST | `/auth/register` | 注册 |
+| POST | `/auth/login` | 登录 |
+| POST | `/auth/refresh` | 刷新 Token |
+| GET | `/api/v1/mails` | 邮件列表（支持 folder/search/starred/unread 分页） |
+| GET | `/api/v1/mails/:id` | 单封邮件 |
+| GET | `/api/v1/mails/:id/conversation` | 对话线程（自动聚合 + 去重） |
+| POST | `/api/v1/mails/send` | 发送邮件（Resend API） |
+| POST | `/api/v1/mails/:id/reply` | 回复邮件（Resend API） |
+| POST | `/api/v1/mails/:id/archive` | 归档 |
+| PUT | `/api/v1/mails/:id/label` | 设置标签 |
+| DELETE | `/api/v1/mails/:id` | 删除 |
+| POST | `/api/v1/mails/inbound` | 外部邮件接收入口 |
+| GET | `/api/v1/mails/analytics` | 邮件统计 |
+| POST | `/api/v1/agents` | 创建 Agent |
+| GET | `/api/v1/agents` | Agent 列表 |
+| POST | `/api/v1/webhooks` | 创建 Webhook |
+| POST | `/api/mcp` | MCP Server（Streamable HTTP） |
 
 ---
 
@@ -363,8 +370,28 @@ missive-mail/
 | R2 | 10GB | <1GB | $0 |
 | DO | 1M 请求 | ~10K | $0 |
 | Queue | 1M 操作 | ~10K | $0 |
-| CF Email Service | 3,000封/月 | ~500封 | $0 |
+| Resend | 100封/天免费 | ~500封/月 | $0 |
 | **合计** | | | **$5/月** |
+
+---
+
+## 📜 Changelog
+
+### 2026-05-08
+
+- **fix**: 回复端点现在通过 Resend API 发送实际邮件（之前只写数据库不发信）
+- **fix**: 对话线程视图去重 sent/inbox 副本
+- **fix**: 回复收件人修复 — 扫描整个对话线程找第一个非自己的发件人
+- **fix**: 循环剥离所有 `Re:/RE:` 前缀正确匹配 thread
+- **fix**: 添加 `RESEND_API_KEY` 到 Env 类型定义
+- **data**: 清理 10 条脏数据（错误的 `to_addr`）
+
+### 2026-05-07
+
+- **feat**: 对话线程视图（conversation endpoint）
+- **feat**: 回复时创建 inbox 副本确保 thread 完整
+- **feat**: 前端 ConversationView 组件
+- **fix**: 路由顺序修复（`/:id/conversation` 在 `/:id` 之前）
 
 ---
 
