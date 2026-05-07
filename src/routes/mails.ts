@@ -116,47 +116,6 @@ mailApp.get("/analytics", async (c) => {
   return c.json({ totals, byFolder });
 });
 
-// ─── GET /api/v1/mails/:id ──────────────────────────────────────────────────
-mailApp.get("/:id", async (c) => {
-  const userId = c.get("userId");
-  const mailId = c.req.param("id");
-  const db = getDb(c.env);
-
-  const mails = await db
-    .select()
-    .from(schema.mails)
-    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)))
-    .limit(1);
-
-  if (mails.length === 0) {
-    return c.json({ error: "Mail not found" }, 404);
-  }
-
-  // Mark as read
-  if (!mails[0].isRead) {
-    await db.update(schema.mails).set({ isRead: true }).where(eq(schema.mails.id, mailId));
-  }
-
-  // Get body
-  const bodies = await db
-    .select()
-    .from(schema.mailBodies)
-    .where(eq(schema.mailBodies.mailId, mailId))
-    .limit(1);
-
-  // Get attachments
-  const attachments = await db
-    .select()
-    .from(schema.attachments)
-    .where(eq(schema.attachments.mailId, mailId));
-
-  return c.json({
-    mail: mails[0],
-    body: bodies[0] || null,
-    attachments,
-  });
-});
-
 // ─── GET /api/v1/mails/:id/conversation ─────────────────────────────────────
 mailApp.get("/:id/conversation", async (c) => {
   const userId = c.get("userId");
@@ -251,6 +210,47 @@ mailApp.get("/:id/conversation", async (c) => {
       subject: seed[0].subject,
       messages,
     },
+  });
+});
+
+// ─── GET /api/v1/mails/:id ──────────────────────────────────────────────────
+mailApp.get("/:id", async (c) => {
+  const userId = c.get("userId");
+  const mailId = c.req.param("id");
+  const db = getDb(c.env);
+
+  const mails = await db
+    .select()
+    .from(schema.mails)
+    .where(and(eq(schema.mails.id, mailId), eq(schema.mails.userId, userId)))
+    .limit(1);
+
+  if (mails.length === 0) {
+    return c.json({ error: "Mail not found" }, 404);
+  }
+
+  // Mark as read
+  if (!mails[0].isRead) {
+    await db.update(schema.mails).set({ isRead: true }).where(eq(schema.mails.id, mailId));
+  }
+
+  // Get body
+  const bodies = await db
+    .select()
+    .from(schema.mailBodies)
+    .where(eq(schema.mailBodies.mailId, mailId))
+    .limit(1);
+
+  // Get attachments
+  const attachments = await db
+    .select()
+    .from(schema.attachments)
+    .where(eq(schema.attachments.mailId, mailId));
+
+  return c.json({
+    mail: mails[0],
+    body: bodies[0] || null,
+    attachments,
   });
 });
 
