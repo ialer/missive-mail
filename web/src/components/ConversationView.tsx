@@ -46,14 +46,35 @@ export default function ConversationView() {
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const { data, isLoading } = useQuery({
+  // Try conversation endpoint, fallback to single mail
+  const { data: convData, isLoading: convLoading } = useQuery({
     queryKey: ['conversation', id],
     queryFn: () => api.getConversation(id!),
     enabled: !!id,
     refetchInterval: 3000,
+    retry: false,
   });
 
-  const conversation: Conversation | undefined = data?.conversation;
+  const { data: mailData, isLoading: mailLoading } = useQuery({
+    queryKey: ['mail', id],
+    queryFn: () => api.getMail(id!),
+    enabled: !!id && !convData,
+    refetchInterval: convData ? false : 3000,
+  });
+
+  const isLoading = convLoading || mailLoading;
+
+  // Build conversation from whichever source we have
+  const conversation: Conversation | undefined = convData?.conversation || (mailData ? {
+    id: mailData.mail.id,
+    subject: mailData.mail.subject,
+    messages: [{
+      ...mailData.mail,
+      body: mailData.body?.text || '',
+      htmlBody: mailData.body?.html || '',
+      attachments: mailData.attachments || [],
+    }],
+  } : undefined);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -74,6 +95,8 @@ export default function ConversationView() {
       await api.replyMail(lastMsg.id, { text: replyText });
       setReplyText('');
       queryClient.invalidateQueries({ queryKey: ['conversation', id] });
+      queryClient.invalidateQueries({ queryKey: ['mail', id] });
+      queryClient.invalidateQueries({ queryKey: ['mails'] });
     } catch (err) {
       console.error('Send failed:', err);
     } finally {
