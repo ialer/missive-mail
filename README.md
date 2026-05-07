@@ -13,6 +13,8 @@ GitHub 通知 → 收件箱 → Agent 自动创建 Issue
 
 **线上地址:** [mail.snbar.top](https://mail.snbar.top)
 
+![Missive Mail Inbox](docs/screenshot-inbox.png)
+
 ---
 
 ## ⚡ 核心特性
